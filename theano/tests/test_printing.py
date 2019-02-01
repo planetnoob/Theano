@@ -5,7 +5,7 @@ from __future__ import absolute_import, print_function, division
 import logging
 
 from nose.plugins.skip import SkipTest
-import numpy
+import numpy as np
 
 from six.moves import StringIO
 
@@ -16,11 +16,8 @@ from theano.printing import min_informative_str, debugprint
 
 
 def test_pydotprint_cond_highlight():
-    """
-    This is a REALLY PARTIAL TEST.
-
-    I did them to help debug stuff.
-    """
+    # This is a REALLY PARTIAL TEST.
+    # I did them to help debug stuff.
 
     # Skip test if pydot is not available.
     if not theano.printing.pydot_imported:
@@ -59,13 +56,10 @@ def test_pydotprint_return_image():
 
 
 def test_pydotprint_long_name():
-    """This is a REALLY PARTIAL TEST.
-
-    It prints a graph where there are variable and apply nodes whose long
-    names are different, but not the shortened names.
-    We should not merge those nodes in the dot graph.
-
-    """
+    # This is a REALLY PARTIAL TEST.
+    # It prints a graph where there are variable and apply nodes whose long
+    # names are different, but not the shortened names.
+    # We should not merge those nodes in the dot graph.
 
     # Skip test if pydot is not available.
     if not theano.printing.pydot_imported:
@@ -84,11 +78,14 @@ def test_pydotprint_long_name():
 
 
 def test_pydotprint_profile():
-    """Just check that pydotprint does not crash with profile."""
+    # Just check that pydotprint does not crash with profile.
 
     # Skip test if pydot is not available.
     if not theano.printing.pydot_imported:
         raise SkipTest('pydot not available')
+
+    if theano.config.mode in ("DebugMode", "DEBUG_MODE"):
+        raise SkipTest("Can't profile in DebugMode")
 
     A = tensor.matrix()
     prof = theano.compile.ProfileStats(atexit_print=False, gpu_checks=False)
@@ -99,8 +96,8 @@ def test_pydotprint_profile():
 
 
 def test_min_informative_str():
-    """ evaluates a reference output to make sure the
-        min_informative_str function works as intended """
+    # evaluates a reference output to make sure the
+    # min_informative_str function works as intended
 
     A = tensor.matrix(name='A')
     B = tensor.matrix(name='B')
@@ -252,11 +249,11 @@ def test_debugprint():
     s = s.getvalue()
     # The additional white space are needed!
     reference = '\n'.join([
-        "Elemwise{add,no_inplace} [id A] ''   0 clients:[('[id B]', 1), ('output', '')]",
+        "Elemwise{add,no_inplace} [id A] ''   0 clients:[('output', ''), ('[id C]', 1)]",
         " |A [id D]",
         " |B [id E]",
-        "Elemwise{sub,no_inplace} [id B] ''   1",
-        " |Elemwise{add,no_inplace} [id A] ''   0 clients:[('[id B]', 1), ('output', '')]",
+        "Elemwise{sub,no_inplace} [id C] ''   1",
+        " |Elemwise{add,no_inplace} [id A] ''   0 clients:[('output', ''), ('[id C]', 1)]",
         " |D [id F]",
     ]) + '\n'
     if s != reference:
@@ -278,9 +275,7 @@ def test_scan_debugprint1():
 
     final_result = result[-1]
     output_str = theano.printing.debugprint(final_result, file='str')
-    lines = []
-    for line in output_str.split('\n'):
-        lines += [line]
+    lines = output_str.split('\n')
 
     expected_output = """Subtensor{int64} [id A] ''
      |Subtensor{int64::} [id B] ''
@@ -341,9 +336,7 @@ def test_scan_debugprint2():
     polynomial = components.sum()
 
     output_str = theano.printing.debugprint(polynomial, file='str')
-    lines = []
-    for line in output_str.split('\n'):
-        lines += [line]
+    lines = output_str.split('\n')
 
     expected_output = """Sum{acc_dtype=float64} [id A] ''
      |for{cpu,scan_fn} [id B] ''
@@ -424,9 +417,7 @@ def test_scan_debugprint3():
     final_result = polynomial
 
     output_str = theano.printing.debugprint(final_result, file='str')
-    lines = []
-    for line in output_str.split('\n'):
-        lines += [line]
+    lines = output_str.split('\n')
 
     expected_output = """Sum{acc_dtype=float64} [id A] ''
      |for{cpu,scan_fn} [id B] ''
@@ -509,8 +500,8 @@ def test_scan_debugprint4():
     def fn(a_m2, a_m1, b_m2, b_m1):
         return a_m1 + a_m2, b_m1 + b_m2
 
-    a0 = theano.shared(numpy.arange(2, dtype='int64'))
-    b0 = theano.shared(numpy.arange(2, dtype='int64'))
+    a0 = theano.shared(np.arange(2, dtype='int64'))
+    b0 = theano.shared(np.arange(2, dtype='int64'))
 
     (a, b), _ = theano.scan(
         fn, outputs_info=[{'initial': a0, 'taps': [-2, -1]},
@@ -519,9 +510,7 @@ def test_scan_debugprint4():
 
     final_result = a + b
     output_str = theano.printing.debugprint(final_result, file='str')
-    lines = []
-    for line in output_str.split('\n'):
-        lines += [line]
+    lines = output_str.split('\n')
 
     expected_output = """Elemwise{add,no_inplace} [id A] ''
      |Subtensor{int64::} [id B] ''
@@ -590,9 +579,7 @@ def test_scan_debugprint5():
     final_result = tensor.grad(result[-1].sum(), A)
 
     output_str = theano.printing.debugprint(final_result, file='str')
-    lines = []
-    for line in output_str.split('\n'):
-        lines += [line]
+    lines = output_str.split('\n')
 
     expected_output = """Subtensor{int64} [id A] ''
     |for{cpu,grad_of_scan_fn}.1 [id B] ''
@@ -693,8 +680,8 @@ def test_scan_debugprint5():
 
     for{cpu,scan_fn} [id F] ''
     >Elemwise{mul,no_inplace} [id CR] ''
-    > |<TensorType(float64, vector)> [id CS] -> [id H]
-    > |A_copy [id CT] -> [id P]
+    > |<TensorType(float64, vector)> [id CP] -> [id H]
+    > |A_copy [id CL] -> [id P]
 
     for{cpu,scan_fn} [id F] ''
     >Elemwise{mul,no_inplace} [id CR] ''

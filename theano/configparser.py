@@ -98,15 +98,17 @@ class change_flags(object):
 
     Useful during tests.
     """
-    def __init__(self, **kwargs):
+    def __init__(self, args=(), **kwargs):
         confs = dict()
-        for k in kwargs:
-            l = [v for v in theano.configparser._config_var_list
+        args = dict(args)
+        args.update(kwargs)
+        for k in args:
+            l = [v for v in _config_var_list
                  if v.fullname == k]
-            assert len(l) == 1
+            assert len(l) == 1, l
             confs[k] = l[0]
         self.confs = confs
-        self.new_vals = kwargs
+        self.new_vals = args
 
     def __call__(self, f):
         @wraps(f)
@@ -122,7 +124,7 @@ class change_flags(object):
         try:
             for k, v in iteritems(self.confs):
                 v.__set__(None, self.new_vals[k])
-        except:
+        except Exception:
             self.__exit__()
             raise
 
@@ -181,11 +183,13 @@ def _config_print(thing, buf, print_doc=True):
         print("", file=buf)
 
 
-def get_config_md5():
+def get_config_hash():
     """
-    Return a string md5 of the current config options. It should be such that
-    we can safely assume that two different config setups will lead to two
-    different strings.
+    Return a string sha256 of the current config options. In the past,
+    it was md5.
+
+    The string should be such that we can safely assume that two different
+    config setups will lead to two different strings.
 
     We only take into account config options for which `in_c_key` is True.
     """

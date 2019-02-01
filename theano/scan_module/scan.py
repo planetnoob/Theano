@@ -45,7 +45,7 @@ __contact__ = "Razvan Pascanu <r.pascanu@gmail>"
 
 
 import logging
-import numpy
+import numpy as np
 import warnings
 from collections import OrderedDict
 
@@ -83,8 +83,7 @@ def scan(fn,
          allow_gc=None,
          strict=False,
          return_list=False):
-    """
-    This function constructs and applies a Scan op to the provided
+    """This function constructs and applies a Scan op to the provided
     arguments.
 
     Parameters
@@ -103,7 +102,7 @@ def scan(fn,
         * ...
         * all time slices of the last sequence
         * all past slices of the first output
-        * all past slices of the second otuput
+        * all past slices of the second output
         * ...
         * all past slices of the last output
         * all other arguments (the list given as `non_sequences` to
@@ -325,10 +324,10 @@ def scan(fn,
         iteration. But we free all those temp allocation at the end of
         all iterations (this is what the Theano flag allow_gc mean).
 
-        If you use cnmem and this scan is on GPU, the speed up from
-        the scan allow_gc is small. If you are missing memory, disable
-        the scan allow_gc could help you run graph that request much
-        memory.
+        If you use preallocate and this scan is on GPU, the speed up
+        from the scan allow_gc is small. If you are missing memory,
+        disable the scan allow_gc could help you run graph that
+        request much memory.
 
     strict
         If true, all the shared variables used in ``fn`` must be provided as a
@@ -488,8 +487,14 @@ def scan(fn,
         # a sequence, though is highly unlikely in practice
         if 'taps' in seq:
             # go through the indicated slice
-            mintap = numpy.min(seq['taps'])
-            maxtap = numpy.max(seq['taps'])
+            mintap = np.min(seq['taps'])
+            maxtap = np.max(seq['taps'])
+            # We cut the sequence such that seq[i] to correspond to
+            # seq[i-k]. For the purposes of cutting the sequences, we
+            # need to pretend tap 0 is used to avoid cutting the sequences
+            # too long if the taps are all lower or all higher than 0.
+            maxtap_proxy = max(maxtap, 0)
+            mintap_proxy = min(mintap, 0)
             for k in seq['taps']:
                 # create one slice of the input
                 # Later on, if we decide not to use scan because we are
@@ -500,9 +505,9 @@ def scan(fn,
 
                 # If not we need to use copies, that will be replaced at
                 # each frame by the corresponding slice
-                actual_slice = seq['input'][k - mintap]
+                actual_slice = seq['input'][k - mintap_proxy]
                 _seq_val = tensor.as_tensor_variable(seq['input'])
-                _seq_val_slice = _seq_val[k - mintap]
+                _seq_val_slice = _seq_val[k - mintap_proxy]
                 nw_slice = _seq_val_slice.type()
 
                 # Try to transfer test_value to the new variable
@@ -529,18 +534,17 @@ def scan(fn,
                         nw_name = seq['input'].name + '[t%d]' % k
                     nw_slice.name = nw_name
 
-                # We cut the sequence such that seq[i] to correspond to
-                # seq[i-k]. For the purposes of cutting the sequences, we
-                # need to pretend tap 0 is used to avoid cutting the sequences
-                # too long if the taps are all lower or all higher than 0.
-                maxtap_proxy = max(maxtap, 0)
-                mintap_proxy = min(mintap, 0)
                 start = (k - mintap_proxy)
+                nw_name = None
                 if k == maxtap_proxy:
                     nw_seq = seq['input'][start:]
+                    if getattr(seq['input'], 'name', None) is not None:
+                        nw_name = seq['input'].name + "[%d:]" % start
                 else:
                     end = -(maxtap_proxy - k)
                     nw_seq = seq['input'][start:end]
+                    if getattr(seq['input'], 'name', None) is not None:
+                        nw_name = seq['input'].name + "[%d:%d]" % (start, end)
 
                 if go_backwards:
                     nw_seq = nw_seq[::-1]
@@ -549,6 +553,9 @@ def scan(fn,
                 inner_seqs.append(nw_slice)
                 inner_slices.append(actual_slice)
                 n_seqs += 1
+                # Add names -- it helps a lot when debugging
+                if nw_name is not None:
+                    nw_seq.name = nw_name
 
     # Since we've added all sequences now we need to level them up based on
     # n_steps or their different shapes
@@ -575,12 +582,6 @@ def scan(fn,
             actual_n_steps = tensor.minimum(actual_n_steps, contestant)
     else:
         actual_n_steps = tensor.as_tensor(n_steps)
-
-    # Add names -- it helps a lot when debugging
-
-    for (nw_seq, seq) in zip(scan_seqs, seqs):
-        if getattr(seq['input'], 'name', None) is not None:
-            nw_seq.name = seq['input'].name + '[%d:]' % k
 
     scan_seqs = [seq[:actual_n_steps] for seq in scan_seqs]
     # Conventions :
@@ -670,15 +671,15 @@ def scan(fn,
 
         elif init_out.get('taps', None):
 
-            if numpy.any(numpy.array(init_out.get('taps', [])) > 0):
+            if np.any(np.array(init_out.get('taps', [])) > 0):
                 # Make sure we do not have requests for future values of a
                 # sequence we can not provide such values
                 raise ValueError('Can not use future taps of outputs',
                                     init_out)
             # go through the taps
-            mintap = abs(numpy.min(init_out['taps']))
+            mintap = abs(np.min(init_out['taps']))
             mit_sot_tap_array.append(init_out['taps'])
-            idx_offset = abs(numpy.min(init_out['taps']))
+            idx_offset = abs(np.min(init_out['taps']))
             # Sequence
             mit_sot_scan_inputs.append(
                 scan_utils.expand_empty(init_out['initial'][:mintap],
@@ -725,9 +726,9 @@ def scan(fn,
         #      a map); in that case we do not have to do anything ..
 
     # Re-order args
-    max_mit_sot = numpy.max([-1] + mit_sot_rightOrder) + 1
-    max_sit_sot = numpy.max([-1] + sit_sot_rightOrder) + 1
-    n_elems = numpy.max([max_mit_sot, max_sit_sot])
+    max_mit_sot = np.max([-1] + mit_sot_rightOrder) + 1
+    max_sit_sot = np.max([-1] + sit_sot_rightOrder) + 1
+    n_elems = np.max([max_mit_sot, max_sit_sot])
     _ordered_args = [[] for x in xrange(n_elems)]
     offset = 0
     for idx in xrange(n_mit_sot):
@@ -818,6 +819,8 @@ def scan(fn,
 
     # extract still missing inputs (there still might be so) and add them
     # as non sequences at the end of our args
+    if condition is not None:
+        outputs.append(condition)
     fake_nonseqs = [x.type() for x in non_seqs]
     fake_outputs = scan_utils.clone(outputs,
                                     replace=OrderedDict(izip(non_seqs,
@@ -834,16 +837,21 @@ def scan(fn,
     dummy_args += extra_inputs
 
     dummy_outs = outputs
-    if condition is not None:
-        dummy_outs.append(condition)
-    dummy_f = function(dummy_args,
-                       dummy_outs,
-                       updates=updates,
-                       mode=compile.mode.Mode(linker='py',
-                                              optimizer=None),
-                       on_unused_input='ignore',
-                       profile=False)
-
+    # Perform a try-except to provide a meaningful error message to the
+    # user if inputs of the inner function are missing.
+    try:
+        dummy_f = function(dummy_args,
+                           dummy_outs,
+                           updates=updates,
+                           mode=compile.mode.Mode(linker='py',
+                                                  optimizer=None),
+                           on_unused_input='ignore',
+                           profile=False)
+    except gof.fg.MissingInputError as err:
+        msg = ("\nPlease pass this variable to the scan's inner function. Do "
+               "not forget to also pass it to the `non_sequences` attribute "
+               "of scan.")
+        raise gof.fg.MissingInputError(err.args[0] + msg)
     ##
     # Step 5. Re-arange inputs of scan into a more strict order
     ##
@@ -991,22 +999,20 @@ def scan(fn,
                   shared_inner_outputs)
     if condition is not None:
         inner_outs.append(condition)
-    # Cuda and Gpuarray are imported here, instead of being imported on top of
+    # gpuarray is imported here, instead of being imported on top of
     # the file because that would force on the user some dependencies that we
     # might do not want to. Currently we are working on removing the
     # dependencies on sandbox code completeley.
-    from theano.sandbox import cuda
     from theano import gpuarray
-    if cuda.cuda_available or gpuarray.pygpu_activated:
+    if gpuarray.pygpu_activated:
         # very often we end up in this situation when we want to
         # replace w with w_copy, where w is a GPU variable
         # and w_copy is TensorType. This is caused because shared
-        # variables are put on GPU right aways >:| ,
+        # variables are put on GPU right away >:| ,
         new_givens = OrderedDict()
 
         for w, w_copy in iteritems(givens):
-            if ((isinstance(w.type, cuda.CudaNdarrayType) or
-                 isinstance(w.type, gpuarray.GpuArrayType)) and
+            if (isinstance(w.type, gpuarray.GpuArrayType) and
                 isinstance(w_copy.type, tensor.TensorType)):
                 for o in inner_outs:
                     new_givens = traverse(o, w, w_copy, new_givens)
@@ -1039,7 +1045,7 @@ def scan(fn,
     info['name'] = name
     info['mode'] = mode
     info['destroy_map'] = OrderedDict()
-    info['gpu'] = False
+    info['gpua'] = False
     info['as_while'] = as_while
     info['profile'] = profile
     info['allow_gc'] = allow_gc
@@ -1065,7 +1071,7 @@ def scan(fn,
             arg = tensor.as_tensor_variable(arg)
         except TypeError:
             # This happens for Random States for e.g. but it is a good way
-            # to make sure no input is a cuda ndarrays
+            # to make sure all inputs are tensors.
             pass
         scan_inputs += [arg]
     scan_outs = local_op(*scan_inputs)
@@ -1094,7 +1100,7 @@ def scan(fn,
         return out_ls
 
     offset = n_mit_mot
-    offsets = [abs(numpy.min(x)) for x in mit_sot_tap_array]
+    offsets = [abs(np.min(x)) for x in mit_sot_tap_array]
     mit_sot_outs = remove_dimensions(
         scan_outs[offset:offset + n_mit_sot],
         mit_sot_return_steps,

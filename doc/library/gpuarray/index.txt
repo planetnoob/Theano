@@ -18,3 +18,5 @@
     fft
     type
     extra
+    ctc
+    linalg

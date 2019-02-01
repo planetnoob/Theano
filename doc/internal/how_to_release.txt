@@ -28,20 +28,18 @@ It does not have to be in your PYTHONPATH.
 Update the version number
 =========================
 
-Edit ``setup.py`` to contain the newest version number ::
+``Theano/doc/conf.py`` should be updated in the following ways:
 
-    cd Theano-0.X
-    vi setup.py     # Edit the MAJOR, MINOR, MICRO and SUFFIX
-
-``conf.py`` in the ``doc/`` directory should be updated in the following ways:
-
- * Change the ``version`` and ``release`` variables to new version number.
  * Change the upper copyright year to the current year if necessary.
 
 Update the year in the ``Theano/LICENSE.txt`` file too, if necessary.
 
 ``NEWS.txt`` usually contains the name and date of the release, change them
 too.
+
+Update the fallback version in ``theano/version.py``.
+
+Update the version in ``doc/install_generic.inc``.
 
 Update the code and the documentation for the theano flags
 ``warn.ignore_bug_before`` to accept the new version. You must modify the
@@ -58,6 +56,9 @@ following::
     git tag -a rel-0.X.Y
     git push
     git push --tags
+
+This will trigger and build and upload of the conda package to the
+mila-udem channel.
 
 The documentation will be automatically regenerated in the next few hours.
 
@@ -76,13 +77,15 @@ To set your umask::
 
     umask 0022
 
-Now change ``ISRELEASED`` in ``setup.py`` to ``True``.
+Finally, use setuptools to build the release::
 
-Finally, use setuptools to register and upload the release::
+    python setup.py sdist --formats=gztar
 
-    python setup.py register sdist --formats=gztar,zip upload
+Then use twine to upload the release
 
-This command register and uploads the package on pypi.python.org. To be able
+    twine upload dist/Theano-1.0.X.tax.gz
+
+This command uploads the package on pypi.python.org. To be able
 to do that, you must register on PyPI (you can create an new account, or use
 OpenID), and be listed among the "Package Index Owners" of Theano.
 
@@ -114,11 +117,6 @@ the description.
 You can "update this project" and save lots of times to get the revision text
 right. Just do not change the version number.
 
-
-Finally
--------
-
-Change ``ISRELEASED`` back to ``False``.
 
 Update documentation server scripts
 ===================================
@@ -153,7 +151,7 @@ For final releases, send the e-mail to the following mailing lists:
 * theano-users
 * theano-announce
 * numpy-discussion@scipy.org
-* scipy-user@scipy.org
+* scipy-user@python.org
 * G+, Scientific Python: https://plus.google.com/communities/108773711053400791849
 
 For release candidates, only e-mail:

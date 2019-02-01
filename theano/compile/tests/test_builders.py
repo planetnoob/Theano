@@ -2,6 +2,7 @@ from __future__ import absolute_import, print_function, division
 from functools import partial
 import numpy as np
 
+import theano
 from theano import config, shared
 
 from theano.gradient import DisconnectedType
@@ -162,7 +163,8 @@ class T_OpFromGraph(unittest_tools.InferShapeTester):
 
         w, b = T.vectors('wb')
         # we make the 3rd gradient default (no override)
-        op_linear = cls_ofg([x, w, b], [x * w + b], grad_overrides=[go1, go2, 'default'])
+        op_linear = cls_ofg(
+            [x, w, b], [x * w + b], grad_overrides=[go1, go2, 'default'])
         xx, ww, bb = T.vector('xx'), T.vector('yy'), T.vector('bb')
         zz = T.sum(op_linear(xx, ww, bb))
         dx, dw, db = T.grad(zz, [xx, ww, bb])
@@ -189,6 +191,33 @@ class T_OpFromGraph(unittest_tools.InferShapeTester):
         assert dx2.ndim == 1
         assert isinstance(dw2.type, NullType)
         assert isinstance(db2.type, DisconnectedType)
+
+    @test_params
+    def test_lop_override(self, cls_ofg):
+        x = T.vector()
+        y = 1. / (1. + T.exp(-x))
+
+        def lop_ov(inps, outs, grads):
+            y_, = outs
+            dedy_, = grads
+            return [2. * y_ * (1. - y_) * dedy_]
+
+        y_, dedy = T.vector(), T.vector()
+        op_lop_ov = cls_ofg([x, y_, dedy], [2. * y_ * (1. - y_) * dedy])
+
+        xx = T.vector()
+        yy1 = T.sum(T.nnet.sigmoid(xx))
+        gyy1 = 2. * T.grad(yy1, xx)
+
+        for ov in [lop_ov, op_lop_ov]:
+            op = cls_ofg([x], [y], lop_overrides=ov)
+            yy2 = T.sum(op(xx))
+            gyy2 = T.grad(yy2, xx)
+            fn = function([xx], [gyy1, gyy2])
+
+            xval = np.random.rand(32).astype(config.floatX)
+            y1val, y2val = fn(xval)
+            assert np.allclose(y1val, y2val)
 
     @test_params
     def test_rop(self, cls_ofg):
@@ -236,6 +265,37 @@ class T_OpFromGraph(unittest_tools.InferShapeTester):
                 dwval, vals[0] * vals[3] * 1.5 + vals[1] * vals[2] * 2.)
 
         # TODO list override case
+
+    @test_params
+    def test_connection_pattern_override(self, cls_ofg):
+        x, y = T.vectors('xy')
+
+        def f1(x, y):
+            del x
+            # but we know how to backpropagate for x for some reasons
+            # and we don't care about the gradient wrt y.
+            return y + T.round(y)
+
+        def f1_back(inputs, output_gradients):
+            return [
+                output_gradients[0],
+                theano.gradient.disconnected_type()]
+
+        op = cls_ofg(
+            inputs=[x, y],
+            outputs=[f1(x, y)],
+            grad_overrides=f1_back,
+            connection_pattern=[[True], [False]],  # This is new
+            on_unused_input='ignore')  # This is new
+
+        c = op(x, y)
+
+        g1 = theano.grad(c.sum(), x)
+
+        out = g1.eval({
+            x: np.ones((5,), dtype=np.float32),
+            y: np.ones((5,), dtype=np.float32)})
+        assert np.allclose(out, [1.] * 5)
 
     @test_params
     def test_nested(self, cls_ofg):
@@ -313,3 +373,14 @@ class T_OpFromGraph(unittest_tools.InferShapeTester):
                                 [np.ones([3, 4], dtype=config.floatX),
                                  np.ones([3, 4], dtype=config.floatX)],
                                 OpFromGraph)
+
+    @theano.change_flags(compute_test_value='raise')
+    def test_compute_test_value(self):
+        x = T.scalar('x')
+        x.tag.test_value = np.array(1., dtype=config.floatX)
+        op = OpFromGraph([x], [x ** 3])
+        y = T.scalar('y')
+        y.tag.test_value = np.array(1., dtype=config.floatX)
+        f = op(y)
+        grad_f = T.grad(f, y)
+        assert grad_f.tag.test_value is not None

@@ -89,7 +89,7 @@ def debugprint(obj, depth=-1, print_type=False,
          an Apply node.
     :type used_ids: dict or None
     :param used_ids: the id to use for some object, but maybe we only
-         refered to it yet.
+         referred to it yet.
 
     :returns: string if `file` == 'str', else file arg
 
@@ -163,7 +163,7 @@ def debugprint(obj, depth=-1, print_type=False,
             topo = obj.toposort()
             order.extend([topo for item in obj.outputs])
         elif isinstance(obj, (integer_types, float, np.ndarray)):
-            print(obj)
+            print(obj, file=_file)
         elif isinstance(obj, (theano.In, theano.Out)):
             results_to_print.append(obj.variable)
             profile_list.append(None)
@@ -310,7 +310,7 @@ class Print(Op):
         self.global_fn = global_fn
 
     def make_node(self, xin):
-        xout = xin.type.make_variable()
+        xout = xin.type()
         return Apply(op=self, inputs=[xin], outputs=[xout])
 
     def perform(self, node, inputs, output_storage):
@@ -688,7 +688,7 @@ def pydotprint(fct, outfile=None,
             the border
     :param colorCodes: dictionary with names of ops as keys and colors as
             values
-    :param cond_highlight: Highlights a lazy if by sorrounding each of the 3
+    :param cond_highlight: Highlights a lazy if by surrounding each of the 3
                 possible categories of ops with a border. The categories
                 are: ops that are on the left branch, ops that are on the
                 right branch, ops that are on both branches
@@ -1221,7 +1221,7 @@ def var_descriptor(obj, _prev_obs=None, _tag_generator=None):
         name = '<ndarray:'
         name += 'strides=[' + ','.join(str(stride)
                                        for stride in obj.strides) + ']'
-        name += ',digest=' + hashlib.md5(obj).hexdigest() + '>'
+        name += ',digest=' + hashlib.sha256(obj).hexdigest() + '>'
     elif hasattr(obj, 'owner') and obj.owner is not None:
         name = str(obj.owner.op) + '('
         name += ','.join(var_descriptor(ipt,
@@ -1265,7 +1265,7 @@ def hex_digest(x):
     Returns a short, mostly hexadecimal hash of a numpy ndarray
     """
     assert isinstance(x, np.ndarray)
-    rval = hashlib.md5(x.tostring()).hexdigest()
+    rval = hashlib.sha256(x.tostring()).hexdigest()
     # hex digest must be annotated with strides to avoid collisions
     # because the buffer interface only exposes the raw data, not
     # any info about the semantics of how that data should be arranged

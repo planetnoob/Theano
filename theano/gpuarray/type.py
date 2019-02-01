@@ -24,11 +24,25 @@ except ImportError:
 _context_reg = {}
 
 
+def gpu_supported(data):
+    """
+    Is the following data supported on the GPU?
+
+    Currently, only complex aren't supported.
+
+    Parameters
+    ----------
+    data : numpy.ndarray or TensorVariable
+           (it must have dtype and ndim parameter)
+    """
+    return str(data.dtype) not in tensor.basic.complex_dtypes
+
+
 def move_to_gpu(data):
     """
     Do we want to move this computation to the GPU?
 
-    Currently, we don't move complex and scalar int.
+    Currently, we don't move complex and scalar.
 
     Parameters
     ----------
@@ -36,10 +50,10 @@ def move_to_gpu(data):
            (it must have dtype and ndim parameter)
     """
     # We don't support complex on the GPU
-    if str(data.dtype) in tensor.basic.complex_dtypes:
+    if not gpu_supported(data):
         return False
-    # We don't want scalar int on the GPU.
-    if data.ndim == 0 and str(data.dtype) in tensor.basic.discrete_dtypes:
+    # We don't want scalars on the GPU.
+    if data.ndim == 0:
         return False
     return True
 
@@ -195,8 +209,23 @@ class GpuArrayType(Type):
         return get_context(self.context_name)
 
     def __repr__(self):
-        return "GpuArrayType<%s>(%s, %s)" % (self.context_name, self.dtype,
-                                             self.broadcastable)
+        # Inspired from TensorType.
+        if self.name:
+            return self.name
+        else:
+            b = self.broadcastable
+            named_broadcastable = {tuple(): 'scalar',
+                                   (False,): 'vector',
+                                   (False, True): 'col',
+                                   (True, False): 'row',
+                                   (False, False): 'matrix'}
+            if b in named_broadcastable:
+                bcast = named_broadcastable[b]
+            elif any(b):
+                bcast = str(b)
+            else:
+                bcast = '%iD' % len(b)
+            return "GpuArrayType<%s>(%s, %s)" % (self.context_name, self.dtype, bcast)
 
     def filter(self, data, strict=False, allow_downcast=None):
         return self.filter_inplace(data, None, strict=strict,
@@ -263,7 +292,10 @@ class GpuArrayType(Type):
                 raise TypeError("Non-unit value on shape on a broadcastable"
                                 " dimension.", shp, self.broadcastable)
         if not isinstance(data, gpuarray.GpuArray):
-            if old_data is not None and old_data.shape == data.shape:
+            if old_data is not None and old_data.shape == data.shape and (
+                # write() only work if the destitation is contiguous.
+                    old_data.flags['C_CONTIGUOUS'] or
+                    old_data.flags['F_CONTIGUOUS']):
                 old_data.write(data)
                 data = old_data
             else:
@@ -271,8 +303,6 @@ class GpuArrayType(Type):
         return data
 
     def filter_variable(self, other, allow_convert=True):
-        from theano.gpuarray.basic_ops import gpu_from_host
-
         if hasattr(other, '_as_GpuArrayVariable'):
             other = other._as_GpuArrayVariable(self.context_name)
 
@@ -282,7 +312,7 @@ class GpuArrayType(Type):
         if other.type == self:
             return other
 
-        if not isinstance(other.type, tensor.TensorType):
+        if not isinstance(other.type, (TensorType, GpuArrayType)):
             raise TypeError('Incompatible type', (self, other.type))
         if (other.type.dtype != self.dtype):
             raise TypeError('Incompatible dtype', (self.dtype,
@@ -303,7 +333,7 @@ class GpuArrayType(Type):
                                  str(self.broadcastable)))
             other = other2
 
-        return gpu_from_host(self.context_name)(other)
+        return other.transfer(self.context_name)
 
     @staticmethod
     def values_eq(a, b, force_same_dtype=True):
@@ -330,33 +360,8 @@ class GpuArrayType(Type):
     def values_eq_approx(a, b,
                          allow_remove_inf=False, allow_remove_nan=False,
                          rtol=None, atol=None):
-        if a.shape != b.shape or a.dtype != b.dtype:
-            return False
-        if str(a.dtype) in theano.tensor.discrete_dtypes:
-            return GpuArrayType.values_eq(a, b)
-        else:
-            if allow_remove_inf or allow_remove_nan:
-                raise NotImplementedError(
-                    "GpuArrayType.values_eq_approx() don't implemented the"
-                    " allow_remove_inf and allow_remove_nan parameter")
-            atol_, rtol_ = theano.tensor.basic._get_atol_rtol(a, b)
-            if rtol is not None:
-                rtol_ = rtol
-            if atol is not None:
-                atol_ = atol
-            res = elemwise2(a, '', b, a, odtype=np.dtype('bool'),
-                            op_tmpl="res = (fabs(a - b) <"
-                            "(%(atol_)s + %(rtol_)s * fabs(b)))" %
-                            locals())
-            ret = np.asarray(res).all()
-            if ret:
-                return True
-            # maybe the trouble is that there are NaNs
-            an = np.asarray(a)
-            bn = np.asarray(b)
-            return tensor.TensorType.values_eq_approx(
-                an, bn, allow_remove_inf=allow_remove_inf,
-                allow_remove_nan=allow_remove_nan, rtol=rtol, atol=atol)
+        return values_eq_approx(a, b, allow_remove_inf, allow_remove_nan,
+                                rtol, atol)
 
     @staticmethod
     def may_share_memory(a, b):
@@ -368,9 +373,6 @@ class GpuArrayType(Type):
     def value_zeros(self, shape):
         return pygpu.gpuarray.zeros(shape, dtype=self.typecode,
                                     context=self.context)
-
-    def make_variable(self, name=None):
-        return self.Variable(self, name=name)
 
     def __eq__(self, other):
         return (type(self) == type(other) and
@@ -429,6 +431,9 @@ class GpuArrayType(Type):
             return np.prod(shape_info) * np.dtype(self.dtype).itemsize
         else:
             return np.dtype(self.dtype).itemsize
+
+    def c_element_type(self):
+        return pygpu.gpuarray.dtype_to_ctype(self.dtype)
 
     def c_declare(self, name, sub, check_input=True):
         return """
@@ -512,6 +517,62 @@ class GpuArrayType(Type):
         return (2, ver[0])
 
 
+def values_eq_approx(a, b, allow_remove_inf=False, allow_remove_nan=False,
+                     rtol=None, atol=None):
+    if a.shape != b.shape or a.dtype != b.dtype:
+        return False
+    if str(a.dtype) in theano.tensor.discrete_dtypes:
+        return GpuArrayType.values_eq(a, b)
+    else:
+        if not (allow_remove_inf or allow_remove_nan):
+            atol_, rtol_ = theano.tensor.basic._get_atol_rtol(a, b)
+            if rtol is not None:
+                rtol_ = rtol
+            if atol is not None:
+                atol_ = atol
+            res = elemwise2(a, '', b, a, odtype=np.dtype('bool'),
+                            op_tmpl="res = (fabs(a - b) <"
+                            "(%(atol_)s + %(rtol_)s * fabs(b)))" %
+                            locals())
+            ret = np.asarray(res).all()
+            if ret:
+                return True
+
+        an = np.asarray(a)
+        bn = np.asarray(b)
+        return tensor.TensorType.values_eq_approx(
+            an, bn, allow_remove_inf=allow_remove_inf,
+            allow_remove_nan=allow_remove_nan, rtol=rtol, atol=atol)
+
+
+def values_eq_approx_remove_inf(a, b):
+    return values_eq_approx(a, b, True)
+
+
+def values_eq_approx_remove_nan(a, b):
+    return values_eq_approx(a, b, False, True)
+
+
+def values_eq_approx_remove_inf_nan(a, b):
+    return values_eq_approx(a, b, True, True)
+
+
+# This is to map ndarray-specific versions of these functions to the GPU.
+EQ_MAP = {
+    theano.tensor.type.values_eq_approx: values_eq_approx,
+    theano.tensor.type.values_eq_approx_remove_inf:
+    values_eq_approx_remove_inf,
+    theano.tensor.type.values_eq_approx_remove_nan:
+    values_eq_approx_remove_nan,
+    theano.tensor.type.values_eq_approx_remove_inf_nan:
+    values_eq_approx_remove_inf_nan,
+}
+
+
+# Add a reverse map too.
+EQ_MAP.update(list((v, k) for k, v in EQ_MAP.items()))
+
+
 class _operators(_tensor_py_operators):
     def _as_TensorVariable(self):
         from .basic_ops import host_from_gpu
@@ -573,7 +634,10 @@ class GpuArrayConstant(_operators, Constant):
         try:
             np_data = np.asarray(self.data)
         except gpuarray.GpuArrayException:
-            np_data = self.data
+            try:
+                np_data = str(self.data)
+            except Exception:
+                np_data = 'Unknown'
         return "GpuArrayConstant{%s}" % np_data
 
 
@@ -629,7 +693,7 @@ def gpuarray_shared_constructor(value, name=None, strict=False,
         notset object.
 
     """
-    if target == 'gpu' or target == 'cpu':
+    if target == 'cpu':
         raise TypeError('not for me')
 
     if not isinstance(value, (np.ndarray, pygpu.gpuarray.GpuArray)):
@@ -637,6 +701,8 @@ def gpuarray_shared_constructor(value, name=None, strict=False,
 
     if target is notset:
         target = None
+        if not gpu_supported(value):
+            raise TypeError('The GPU do not support that value.')
         if not move_to_gpu(value):
             raise TypeError('We do not move that data by default to the GPU')
     try:

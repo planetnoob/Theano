@@ -333,6 +333,9 @@ class SparseConstantSignature(tuple):
                 (b.shape == y.shape) and
                 (abs(b - y).sum() < 1e-6 * b.nnz))
 
+    def __ne__(self, other):
+        return not self == other
+
     def __hash__(self):
         (a, b) = self
         return hash(type(self)) ^ hash(a) ^ hash(type(b))
@@ -627,7 +630,7 @@ class CSM(gof.Op):
         return [g_data, DisconnectedType()(), DisconnectedType()(), DisconnectedType()()]
 
     def infer_shape(self, node, shapes):
-        # node.inputs[3] is of lenght as we only support sparse matrix.
+        # node.inputs[3] is of length as we only support sparse matrix.
         return [(node.inputs[3][0], node.inputs[3][1])]
 
 CSC = CSM('csc')
@@ -1330,7 +1333,7 @@ class GetItemScalar(gof.op.Op):
             elif ind.ndim == 0:
                 input_op += [ind]
             else:
-                raise NotImplemented()
+                raise NotImplementedError
 
         return gof.Apply(self, input_op, [tensor.scalar(dtype=x.dtype)])
 
@@ -2419,7 +2422,7 @@ def mul(x, y):
     Returns
     -------
     A sparse matrix
-        `x` + `y`
+        `x` * `y`
 
     Notes
     -----
@@ -3603,7 +3606,7 @@ def structured_dot(x, y):
 class StructuredDotGradCSC(gof.Op):
     # Op that produces the grad of StructuredDot.
 
-    # :param a_indices: Matrix indicies
+    # :param a_indices: Matrix indices
     # :param a_indptr: Matrix indptr
     # :param b: Right operand
     # :param g_ab: Accumulated gradient.
@@ -3733,7 +3736,7 @@ sdg_csc = StructuredDotGradCSC()
 class StructuredDotGradCSR(gof.Op):
     # Op that produces the grad of StructuredDot.
 
-    # :param a_indices: Matrix indicies
+    # :param a_indices: Matrix indices
     # :param a_indptr: Matrix indptr
     # :param b: Right operand
     # :param g_ab: Accumulated gradient.
@@ -4005,28 +4008,34 @@ class Dot(gof.op.Op):
                 "sparse variable as inputs, but the inputs are "
                 "%s (%s) and %s (%s)." % (x, x.type, y, y.type))
 
-        if not x_is_sparse_var:
+        if x_is_sparse_var:
+            broadcast_x = (False,) * x.ndim
+        else:
             x = tensor.as_tensor_variable(x)
+            broadcast_x = x.type.broadcastable
             assert y.format in ["csr", "csc"]
             if x.ndim not in (1, 2):
                 raise TypeError(
                     'theano.sparse.Dot: input 0 (0-indexed) must have ndim of '
                     '1 or 2, %d given.' % x.ndim)
 
-        if not y_is_sparse_var:
+        if y_is_sparse_var:
+            broadcast_y = (False,) * y.ndim
+        else:
             y = tensor.as_tensor_variable(y)
+            broadcast_y = y.type.broadcastable
             assert x.format in ["csr", "csc"]
             if y.ndim not in (1, 2):
                 raise TypeError(
                     'theano.sparse.Dot: input 1 (1-indexed) must have ndim of '
                     '1 or 2, %d given.' % y.ndim)
 
-        if y.ndim == 1 or x.ndim == 1:
-            bz = (False,)
-        else:
-            bz = (False, False)
+        if len(broadcast_y) == 2:
+            broadcast_out = broadcast_x[:-1] + broadcast_y[1:]
+        elif len(broadcast_y) == 1:
+            broadcast_out = broadcast_x[:-1]
         return gof.Apply(self, [x, y], [tensor.tensor(dtype=dtype_out,
-                                                      broadcastable=bz)])
+                                                      broadcastable=broadcast_out)])
 
     def perform(self, node, inputs, out):
         x, y = inputs

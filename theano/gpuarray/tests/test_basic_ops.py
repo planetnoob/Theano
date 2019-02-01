@@ -20,7 +20,8 @@ from ..type import (GpuArrayType, get_context,
 from ..basic_ops import (
     host_from_gpu, HostFromGpu, GpuFromHost, GpuReshape, GpuToGpu,
     GpuAlloc, GpuAllocEmpty, GpuContiguous,
-    gpu_join, GpuJoin, GpuSplit, GpuEye, gpu_contiguous)
+    gpu_join, GpuJoin, GpuSplit, GpuEye, GpuTri,
+    gpu_contiguous)
 from ..elemwise import GpuDimShuffle, GpuElemwise
 from ..subtensor import GpuSubtensor
 
@@ -104,7 +105,7 @@ def makeTester(name, op, gpu_op, cases, checks=None, mode_gpu=mode_with_gpu,
                 node_ref = safe_make_node(self.op, *inputs_ref)
                 node_tst = safe_make_node(self.op, *inputs_tst)
             except Exception as exc:
-                err_msg = ("Test %s::%s: Error occured while making "
+                err_msg = ("Test %s::%s: Error occurred while making "
                            "a node with inputs %s") % (self.gpu_op, testname,
                                                        inputs)
                 exc.args += (err_msg,)
@@ -114,7 +115,7 @@ def makeTester(name, op, gpu_op, cases, checks=None, mode_gpu=mode_with_gpu,
                 f_ref = inplace_func([], node_ref.outputs, mode=mode_nogpu)
                 f_tst = inplace_func([], node_tst.outputs, mode=mode_gpu)
             except Exception as exc:
-                err_msg = ("Test %s::%s: Error occured while trying to "
+                err_msg = ("Test %s::%s: Error occurred while trying to "
                            "make a Function") % (self.gpu_op, testname)
                 exc.args += (err_msg,)
                 raise
@@ -234,7 +235,8 @@ def gpu_alloc_expected(x, *shp):
 
 GpuAllocTester = makeTester(
     name="GpuAllocTester",
-    op=alloc,
+    # The +1 is there to allow the lift to the GPU.
+    op=lambda *args: alloc(*args) + 1,
     gpu_op=GpuAlloc(test_ctx_name),
     cases=dict(
         correct01=(rand(), np.int32(7)),
@@ -350,12 +352,19 @@ class G_Join_and_Split(test_basic.T_Join_and_Split):
         # this is to avoid errors with limited devices
         self.floatX = 'float32'
         self.hide_error = theano.config.mode not in ['DebugMode', 'DEBUG_MODE']
-        self.shared = gpuarray_shared_constructor
+
+        def shared(x, **kwargs):
+            return gpuarray_shared_constructor(x, target=test_ctx_name,
+                                               **kwargs)
+        self.shared = shared
 
     def test_gpusplit_opt(self):
+        # Test that we move the node to the GPU
+        # Also test float16 computation at the same time.
         rng = np.random.RandomState(seed=utt.fetch_seed())
-        m = self.shared(rng.rand(4, 6).astype(self.floatX))
+        m = self.shared(rng.rand(4, 6).astype('float16'))
         o = T.Split(2)(m, 0, [2, 2])
+        assert o[0].dtype == 'float16'
         f = theano.function([], o, mode=self.mode)
         assert any([isinstance(node.op, self.split_op_class)
                     for node in f.maker.fgraph.toposort()])
@@ -391,7 +400,7 @@ def test_gpujoin_gpualloc():
 
 
 def test_gpueye():
-    def check(dtype, N, M_=None):
+    def check(dtype, N, M_=None, k=0):
         # Theano does not accept None as a tensor.
         # So we must use a real value.
         M = M_
@@ -401,13 +410,14 @@ def test_gpueye():
             M = N
         N_symb = T.iscalar()
         M_symb = T.iscalar()
-        k_symb = np.asarray(0)
-        out = T.eye(N_symb, M_symb, k_symb, dtype=dtype)
-        f = theano.function([N_symb, M_symb],
-                            T.stack(out),
+        k_symb = T.iscalar()
+        out = T.eye(N_symb, M_symb, k_symb, dtype=dtype) + np.array(1).astype(dtype)
+        f = theano.function([N_symb, M_symb, k_symb],
+                            out,
                             mode=mode_with_gpu)
-        result = np.asarray(f(N, M))
-        assert np.allclose(result, np.eye(N, M_, dtype=dtype))
+
+        result = np.asarray(f(N, M, k)) - np.array(1).astype(dtype)
+        assert np.allclose(result, np.eye(N, M_, k, dtype=dtype))
         assert result.dtype == np.dtype(dtype)
         assert any([isinstance(node.op, GpuEye)
                     for node in f.maker.fgraph.toposort()])
@@ -417,12 +427,26 @@ def test_gpueye():
         # M != N, k = 0
         yield check, dtype, 3, 5
         yield check, dtype, 5, 3
+        # N == M, k != 0
+        yield check, dtype, 3, 3, 1
+        yield check, dtype, 3, 3, -1
+        # N < M, k != 0
+        yield check, dtype, 3, 5, 1
+        yield check, dtype, 3, 5, -1
+        # N > M, k != 0
+        yield check, dtype, 5, 3, 1
+        yield check, dtype, 5, 3, -1
+        # k > M, -k > N, k > M, k > N
+        yield check, dtype, 5, 3, 3
+        yield check, dtype, 3, 5, 3
+        yield check, dtype, 5, 3, -3
+        yield check, dtype, 3, 5, -3
+        yield check, dtype, 5, 3, 6
+        yield check, dtype, 3, 5, -6
 
 
 def test_hostfromgpu_shape_i():
-    """
-    Test that the shape is lifted over hostfromgpu
-    """
+    # Test that the shape is lifted over hostfromgpu
 
     m = mode_with_gpu.including('local_dot_to_dot22',
                                 'local_dot22_to_dot22scalar',
@@ -456,13 +480,12 @@ def test_hostfromgpu_shape_i():
 
 
 def test_Gpujoin_inplace():
-    """Test Gpujoin to work inplace.
-
-    This function tests the case when several elements are passed to the
-    Gpujoin function but all except one of them are empty. In this case
-    Gpujoin should work inplace and the output should be the view of the
-    non-empty element.
-    """
+    # Test Gpujoin to work inplace.
+    #
+    # This function tests the case when several elements are passed to the
+    # Gpujoin function but all except one of them are empty. In this case
+    # Gpujoin should work inplace and the output should be the view of the
+    # non-empty element.
     s = T.lscalar()
     data = np.array([3, 4, 5], dtype=theano.config.floatX)
     x = gpuarray_shared_constructor(data, borrow=True)
@@ -472,5 +495,115 @@ def test_Gpujoin_inplace():
     c = join(0, x, z)
 
     f = theano.function([s], theano.Out(c, borrow=True))
-    assert x.get_value(borrow=True, return_internal_type=True) is f(0)
+    if not isinstance(mode_with_gpu, theano.compile.DebugMode):
+        assert x.get_value(borrow=True, return_internal_type=True) is f(0)
     assert np.allclose(f(0), [3, 4, 5])
+
+
+def test_gpu_tril_triu():
+    def check_l(m, k=0):
+        m_symb = T.matrix(dtype=m.dtype)
+        k_symb = T.iscalar()
+
+        f = theano.function([m_symb, k_symb],
+                            T.tril(m_symb, k_symb),
+                            mode=mode_with_gpu)
+        result = f(m, k)
+        assert np.allclose(result, np.tril(m, k))
+        assert result.dtype == np.dtype(dtype)
+        assert any([isinstance(node.op, GpuTri)
+                    for node in f.maker.fgraph.toposort()])
+
+    def check_u(m, k=0):
+        m_symb = T.matrix(dtype=m.dtype)
+        k_symb = T.iscalar()
+        f = theano.function([m_symb, k_symb],
+                            T.triu(m_symb, k_symb),
+                            mode=mode_with_gpu)
+        result = f(m, k)
+        assert np.allclose(result, np.triu(m, k))
+        assert result.dtype == np.dtype(dtype)
+        assert any([isinstance(node.op, GpuTri)
+                    for node in f.maker.fgraph.toposort()])
+
+    utt.seed_rng()
+    test_rng = np.random.RandomState(seed=utt.fetch_seed())
+
+    for dtype in ['float64', 'float32', 'float16']:
+        # try a big one
+        m = np.asarray(test_rng.rand(5000, 5000) * 2 - 1, dtype=dtype)
+        yield check_l, m, 0
+        yield check_l, m, 1
+        yield check_l, m, -1
+
+        yield check_u, m, 0
+        yield check_u, m, 1
+        yield check_u, m, -1
+
+        m = np.asarray(test_rng.rand(10, 10) * 2 - 1, dtype=dtype)
+        yield check_l, m, 0
+        yield check_l, m, 1
+        yield check_l, m, -1
+
+        yield check_u, m, 0
+        yield check_u, m, 1
+        yield check_u, m, -1
+
+        m = np.asarray(test_rng.rand(10, 5) * 2 - 1, dtype=dtype)
+        yield check_l, m, 0
+        yield check_l, m, 1
+        yield check_l, m, -1
+
+        yield check_u, m, 0
+        yield check_u, m, 1
+        yield check_u, m, -1
+
+
+def test_gputri():
+    def check(dtype, N, M_=None, k=0):
+        # Theano does not accept None as a tensor.
+        # So we must use a real value.
+        M = M_
+        # Currently DebugMode does not support None as inputs even if this is
+        # allowed.
+        if M is None:
+            M = N
+        N_symb = T.iscalar()
+        M_symb = T.iscalar()
+        k_symb = T.iscalar()
+        out = T.tri(N_symb, M_symb, k_symb, dtype=dtype) + np.array(1).astype(dtype)
+        f = theano.function([N_symb, M_symb, k_symb],
+                            out,
+                            mode=mode_with_gpu)
+        result = np.asarray(f(N, M, k)) - np.array(1).astype(dtype)
+        assert np.allclose(result, np.tri(N, M_, k, dtype=dtype))
+        assert result.dtype == np.dtype(dtype)
+        assert any([isinstance(node.op, GpuTri)
+                    for node in f.maker.fgraph.toposort()])
+
+    for dtype in ['float64', 'float32', 'int32', 'float16']:
+        # try a big one
+        yield check, dtype, 1000, 1000, 0
+        yield check, dtype, 1000, 1000, -400
+        yield check, dtype, 1000, 1000, 400
+
+        yield check, dtype, 5
+        # M != N, k = 0
+        yield check, dtype, 3, 5
+        yield check, dtype, 5, 3
+        # N == M, k != 0
+        yield check, dtype, 3, 3, 1
+        yield check, dtype, 3, 3, -1
+        # N < M, k != 0
+        yield check, dtype, 3, 5, 1
+        yield check, dtype, 3, 5, -1
+        # N > M, k != 0
+        yield check, dtype, 5, 3, 1
+        yield check, dtype, 5, 3, -1
+        # k > M, -k > N, k > M, k > N
+        yield check, dtype, 5, 3, 3
+        yield check, dtype, 3, 5, 3
+        yield check, dtype, 5, 3, -3
+        yield check, dtype, 3, 5, -3
+        yield check, dtype, 5, 3, 6
+        yield check, dtype, 3, 5, -6

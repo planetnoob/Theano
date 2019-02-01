@@ -71,8 +71,14 @@ try:
     else:
         try_import()
         _need_reload = True
-        if version != getattr(lazylinker_ext, '_version', None):
-            raise ImportError()
+        actual_version = getattr(lazylinker_ext, '_version', None)
+        if version != actual_version:
+            raise ImportError(
+                "Version check of the existing lazylinker compiled file."
+                " Looking for version %s, but found %s. "
+                "Extra debug information: force_compile=%s, _need_reload=%s" % (
+                    version,
+                    actual_version, force_compile, _need_reload))
 except ImportError:
     get_lock()
     try:
@@ -88,8 +94,15 @@ except ImportError:
             else:
                 try_import()
                 _need_reload = True
-            if version != getattr(lazylinker_ext, '_version', None):
-                raise ImportError()
+            actual_version = getattr(lazylinker_ext, '_version', None)
+            if version != actual_version:
+                raise ImportError(
+                    "Version check of the existing lazylinker compiled file."
+                    " Looking for version %s, but found %s. "
+                    "Extra debug information: force_compile=%s,"
+                    " _need_reload=%s" % (
+                        version,
+                        actual_version, force_compile, _need_reload))
         except ImportError:
             # It is useless to try to compile if there isn't any
             # compiler!  But we still want to try to load it, in case
@@ -98,7 +111,7 @@ except ImportError:
                 raise
             _logger.info("Compiling new CVM")
             dirname = 'lazylinker_ext'
-            cfile = os.path.join(theano.__path__[0], 'gof', 'lazylinker_c.c')
+            cfile = os.path.join(theano.__path__[0], 'gof', 'c_code', 'lazylinker_c.c')
             if not os.path.exists(cfile):
                 # This can happen in not normal case. We just
                 # disable the c clinker. If we are here the user
@@ -127,7 +140,8 @@ except ImportError:
                                              preargs=args)
             # Save version into the __init__.py file.
             init_py = os.path.join(loc, '__init__.py')
-            open(init_py, 'w').write('_version = %s\n' % version)
+            with open(init_py, 'w') as f:
+                f.write('_version = %s\n' % version)
             # If we just compiled the module for the first time, then it was
             # imported at the same time: we need to make sure we do not
             # reload the now outdated __init__.pyc below.
